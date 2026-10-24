@@ -4,7 +4,8 @@ slip_ui.py - local browser UI for packing_slip.py.
 
 Starts a small web server on this machine and opens it in the browser. Drop an
 invoice PDF on the page to fill the packing slip table, edit anything (ship-to,
-items, quantities, qty packed, sign-off), then export the PDF. Standard library only.
+items, quantities, qty packed, sign-off), then export the PDF. Settings edits the
+line items to ignore (config.json). Standard library only.
 
   python3 slip_ui.py
   python3 slip_ui.py --port 8766 --no-browser
@@ -78,6 +79,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(n)
 
     def do_GET(self):
+        if urlparse(self.path).path == "/api/config":
+            try:
+                return self.send_json({"config": packing_slip.load_config()})
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, 400)
         if urlparse(self.path).path != "/":
             return self.send(404, "not found", "text/plain")
         with open(PAGE, "rb") as f:
@@ -88,7 +94,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path == "/api/parse":
                 inv = packing_slip.parse_invoice(self.body())
-                self.send_json({"invoice": dict(inv, items=[{"item": s, "qty": q} for s, q in inv["items"]])})
+                self.send_json({"invoice": dict(inv, items=[{"item": s, "qty": q} for s, q in inv["items"]],
+                                                ignored=[{"item": s, "qty": q} for s, q in inv["ignored"]])})
+            elif url.path == "/api/config":
+                self.send_json({"config": packing_slip.save_config(json.loads(self.body()))})
             elif url.path == "/api/pdf":
                 inv = slip_from_page(json.loads(self.body()))
                 name = "Packing Slip %s.pdf" % (inv["number"] or "draft")

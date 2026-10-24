@@ -6,8 +6,9 @@ packing_slip.py - make a packing slip PDF from an invoice PDF (the Wave invoice 
 
 The slip lists each invoice line's item and quantity ordered, with an empty
 "Qty Packed" box to fill in by hand. Descriptions (material, Bent, Pemnut ...) and
-prices are left off. It is written next to the invoice as "Packing Slip <number>.pdf"
-unless -o names a file (one invoice) or a folder.
+prices are left off, and so are line items listed under ignore_items in config.json
+(Powder Coating by default; edit it in the UI's Settings). It is written next to the
+invoice as "Packing Slip <number>.pdf" unless -o names a file (one invoice) or a folder.
 
 How the invoice is read: each item starts with a bold line at the left edge of the
 Items column, and its quantity is the number on the same baseline under the
@@ -16,13 +17,16 @@ one, otherwise BILL TO.
 Standard library only.
 """
 import argparse
+import json
 import os
 import re
 import sys
 import zlib
 
 PAGE_W, PAGE_H, MARGIN = 612, 792, 36  # letter portrait
-LOGO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")  # top-left of each page, if present
+HERE = os.path.dirname(os.path.abspath(__file__))
+LOGO = os.path.join(HERE, "logo.png")  # top-left of each page, if present
+CONFIG = os.path.join(HERE, "config.json")
 LOGO_SIZE = 72
 
 
@@ -458,16 +462,69 @@ class PdfText:
 # --------------------------------------------------------------------------
 # Invoice layout
 # --------------------------------------------------------------------------
-SKIP_ITEMS = {"powder coating"}  # invoice lines that never go on the packing slip (any case)
+# --------------------------------------------------------------------------
+# Config (config.json): invoice line items that never go on the packing slip
+# --------------------------------------------------------------------------
+DEFAULT_CONFIG = {"ignore_items": ["Powder Coating"]}
+
+
+def load_config(path=CONFIG):
+    """config.json merged over the defaults; the defaults when the file is missing."""
+    cfg = dict(DEFAULT_CONFIG)
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg.update(json.load(f))
+    except FileNotFoundError:
+        pass
+    except ValueError as e:
+        raise ValueError("%s: %s" % (os.path.basename(path), e))
+    return clean_config(cfg)
+
+
+def clean_config(cfg):
+    """The config with ignore_items as a list of distinct, non-blank strings (ValueError otherwise)."""
+    items = cfg.get("ignore_items")
+    if not isinstance(items, list) or not all(isinstance(s, str) for s in items):
+        raise ValueError("ignore_items must be a list of item names")
+    seen, out = set(), []
+    for s in (" ".join(s.split()) for s in items):
+        if s and s.lower() not in seen:
+            seen.add(s.lower())
+            out.append(s)
+    return dict(cfg, ignore_items=out)
+
+
+def save_config(cfg, path=CONFIG):
+    cfg = clean_config(cfg)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+    return cfg
+
+
+def ignored(name, patterns):
+    """True when an item name matches an ignore pattern: same text ignoring case and extra
+    spaces, with * matching any run of characters ("Powder Coat*")."""
+    name = " ".join(name.split()).lower()
+    for p in patterns:
+        rx = ".*".join(re.escape(part) for part in " ".join(p.split()).lower().split("*"))
+        if re.fullmatch(rx, name, re.S):
+            return True
+    return False
 
 
 def near(a, b, tol=1.5):
     return abs(a - b) <= tol
 
 
-def parse_invoice(data):
-    """{number, po, date, seller: [lines], ship_to: [lines],
-    ship_label, items: [(item, qty)]} from invoice PDF bytes."""
+def parse_invoice(data, ignore=None):
+    """{number, po, date, seller: [lines], ship_to: [lines], ship_label, items: [(item, qty)],
+    ignored: [(item, qty)]} from invoice PDF bytes. Items matching an ignore pattern (default:
+    ignore_items in config.json) go to ignored instead of items."""
+    if ignore is None:
+        ignore = load_config()["ignore_items"]
     pages = PdfText(data).all_pages()
     if not pages:
         raise ValueError("no pages found")
@@ -524,12 +581,13 @@ def parse_invoice(data):
                 items.append((s.strip(), int(n) if n == int(n) else n))
     if not items:
         raise ValueError("no invoice items found (expected an Items / Quantity table)")
-    items = [(s, n) for s, n in items if s.lower() not in SKIP_ITEMS]
+    skipped = [(s, n) for s, n in items if ignored(s, ignore)]
+    items = [(s, n) for s, n in items if not ignored(s, ignore)]
     if not items:
-        raise ValueError("nothing to pack (only %s on the invoice)" % ", ".join(sorted(SKIP_ITEMS)))
+        raise ValueError("nothing to pack (every line is ignored: %s)" % ", ".join(s for s, _ in skipped))
     return {"number": get("Invoice Number") or "", "date": get("Invoice Date") or "",
             "po": next((v for k, v in fields if re.match(r"P\.?\s*O\.?\b|Purchase Order", k, re.I)), ""),
-            "seller": seller, "ship_to": ship_to, "ship_label": ship_label, "items": items}
+            "seller": seller, "ship_to": ship_to, "ship_label": ship_label, "items": items, "ignored": skipped}
 
 
 # --------------------------------------------------------------------------
@@ -666,12 +724,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Make a packing slip PDF from an invoice PDF.")
     ap.add_argument("invoices", nargs="+", help="invoice PDF file(s)")
     ap.add_argument("-o", "--out", help="output file (one invoice) or folder; default: next to each invoice")
+    ap.add_argument("--config", default=CONFIG, help="config file with ignore_items (default: config.json here)")
     args = ap.parse_args(argv)
+    try:
+        ignore = load_config(args.config)["ignore_items"]
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 1
     status = 0
     for src in args.invoices:
         try:
             with open(src, "rb") as f:
-                inv = parse_invoice(f.read())
+                inv = parse_invoice(f.read(), ignore)
         except (OSError, ValueError) as e:
             print("%s: %s" % (src, e), file=sys.stderr)
             status = 1
@@ -679,8 +743,9 @@ def main(argv=None):
         path = output_path(src, inv, args.out, len(args.invoices) > 1)
         with open(path, "wb") as f:
             f.write(packing_slip_pdf(inv))
-        print("%s -> %s  (%d items, %s pcs)" % (src, path, len(inv["items"]),
-                                               qty_text(sum(q for _, q in inv["items"]))))
+        print("%s -> %s  (%d items, %s pcs%s)" % (
+            src, path, len(inv["items"]), qty_text(sum(q for _, q in inv["items"])),
+            "; left off " + ", ".join(s for s, _ in inv["ignored"]) if inv["ignored"] else ""))
     return status
 
 

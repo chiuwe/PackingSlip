@@ -79,11 +79,32 @@ tfoot td.n { padding-right: 16px; }
 .tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
 .tools .hint { color: var(--muted); font-size: 12px; margin-left: auto; }
 .empty { padding: 40px 20px; text-align: center; color: var(--muted); }
+dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--ink);
+  padding: 0; width: min(480px, calc(100vw - 32px)); box-shadow: 0 18px 50px rgba(0, 0, 0, .25); }
+dialog::backdrop { background: rgba(0, 0, 0, .35); }
+dialog form { padding: 18px 20px; margin: 0; }
+dialog h2 { font-size: 16px; margin: 0 0 4px; }
+dialog .sub { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+dialog ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px;
+  max-height: 300px; overflow-y: auto; }
+dialog li { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 4px; border-bottom: 1px solid var(--line); }
+dialog li:last-child { border-bottom: 0; }
+dialog li input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; }
+dialog li input:hover { border-color: var(--line); }
+dialog li input:focus { border-color: var(--accent); background: var(--bg); outline: none; }
+dialog li.none { color: var(--muted); padding: 12px; justify-content: center; }
+dialog .addrow { display: flex; gap: 8px; margin-top: 10px; }
+dialog .addrow input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+dialog .err { color: var(--bad); font-size: 13px; margin: 10px 0 0; min-height: 0; }
+dialog .err:empty { display: none; }
+dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 </style>
 </head>
 <body>
 <header>
   <h1>MCY <span>Packing Slip</span></h1>
+  <button id="addTop" title="Add a line at the end of the table">+ Add line</button>
+  <button id="openSettings" title="Line items to leave off packing slips">Settings</button>
   <button id="reset" title="Clear the slip and start over">New slip</button>
   <button id="export" class="primary" disabled>Export PDF</button>
 </header>
@@ -92,7 +113,7 @@ tfoot td.n { padding-right: 16px; }
   <aside class="side">
     <div class="drop" id="drop" tabindex="0">
       <strong>Drop an invoice PDF</strong>
-      <p id="dropNote">or click to choose. Items and quantities fill the table; Powder Coating is left off.</p>
+      <p id="dropNote">or click to choose. Items and quantities fill the table; ignored items (Settings) are left off.</p>
       <input type="file" id="file" accept="application/pdf,.pdf" hidden>
     </div>
 
@@ -150,6 +171,24 @@ tfoot td.n { padding-right: 16px; }
   </section>
 </main>
 
+<dialog id="settings" aria-labelledby="settingsTitle">
+  <form method="dialog" id="settingsForm">
+    <h2 id="settingsTitle">Line items to ignore</h2>
+    <p class="sub">Invoice lines with these names are left off packing slips. Capitals don't matter;
+      <code>*</code> matches anything, e.g. <code>Powder Coat*</code>. Applies to invoices loaded after saving.</p>
+    <ul id="ignoreList"></ul>
+    <div class="addrow">
+      <input id="ignoreNew" placeholder="Item name, e.g. Shipping" autocomplete="off" aria-label="Item to ignore">
+      <button type="button" id="ignoreAdd">Add</button>
+    </div>
+    <p class="err" id="settingsErr"></p>
+    <div class="foot">
+      <button type="button" id="settingsCancel">Cancel</button>
+      <button type="submit" class="primary" id="settingsSave">Save</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const DEFAULT_SELLER = "MCY Industries\n45845 Warm Springs Boulevard\nSuite E\nFremont, California 94539\nUnited States";
@@ -178,6 +217,7 @@ function render() {
       <td class="n"><input class="num" aria-label="Qty ordered" data-k="qty" inputmode="decimal"></td>
       <td class="packed n"><input class="num" aria-label="Qty packed" data-k="packed" inputmode="decimal"></td>
       <td class="act">
+        <button class="icon" data-a="insert" title="Insert a line below">+</button>
         <button class="icon" data-a="up" title="Move up" ${i ? "" : "disabled"}>↑</button>
         <button class="icon" data-a="down" title="Move down" ${i < items.length - 1 ? "" : "disabled"}>↓</button>
         <button class="icon" data-a="del" title="Remove line">✕</button>
@@ -187,12 +227,14 @@ function render() {
       inp.addEventListener("input", () => { it[inp.dataset.k] = inp.value; refresh(); });
       inp.addEventListener("keydown", (e) => {
         if (e.key !== "Enter") return;
-        e.preventDefault();  // Enter moves down the same column
+        e.preventDefault();  // Enter moves down the same column; on a filled-in last line, starts a new one
         const next = body.rows[i + 1]?.querySelector(`[data-k="${inp.dataset.k}"]`);
         if (next) { next.focus(); next.select(); }
+        else if (inp.dataset.k !== "packed" && it.item.trim()) insertLine(items.length);
       });
     });
     tr.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+      if (b.dataset.a === "insert") return insertLine(i + 1);
       if (b.dataset.a === "del") items.splice(i, 1);
       else {
         const j = b.dataset.a === "up" ? i - 1 : i + 1;
@@ -208,23 +250,25 @@ function render() {
 
 // totals, highlights and the export button, without rebuilding the inputs being typed in
 function refresh() {
-  let ordered = 0, packed = 0, anyPacked = false, bad = false;
+  // lines without an item name are left off the PDF, so they don't count toward the totals
+  let ordered = 0, packed = 0, lines = 0, anyPacked = false, bad = false;
   [...$("rows").rows].forEach((tr, i) => {
-    const it = items[i], q = parseNum(it.qty), p = parseNum(it.packed);
+    const it = items[i], q = parseNum(it.qty), p = parseNum(it.packed), named = it.item.trim() !== "";
+    if (named) lines++;
     const qIn = tr.querySelector('[data-k="qty"]'), pIn = tr.querySelector('[data-k="packed"]');
     qIn.classList.toggle("invalid", q === null && it.item.trim() !== "");
     const badPacked = String(it.packed ?? "").trim() !== "" && p === null;
     pIn.classList.toggle("invalid", badPacked);
     if ((q === null && it.item.trim() !== "") || badPacked) bad = true;
-    if (q !== null) ordered += q;
+    if (q !== null && named) ordered += q;
     const cell = pIn.parentElement;
     cell.classList.remove("short", "over", "done");
-    if (p !== null && !badPacked) {
+    if (p !== null && !badPacked && named) {
       anyPacked = true; packed += p;
       if (q !== null) cell.classList.add(p < q ? "short" : p > q ? "over" : "done");
     }
   });
-  $("foot").innerHTML = items.length ? `<tr><td></td><td>Total (${items.length} line${items.length === 1 ? "" : "s"})</td>
+  $("foot").innerHTML = items.length ? `<tr><td></td><td>Total (${lines} line${lines === 1 ? "" : "s"})</td>
     <td class="n num">${fmt(ordered)}</td><td class="n num" style="text-align:center">${anyPacked ? fmt(packed) : "—"}</td><td></td></tr>` : "";
   $("export").disabled = !items.some((it) => it.item.trim()) || bad;
   $("export").title = bad ? "Fix the highlighted quantities first" : "";
@@ -251,7 +295,10 @@ async function loadInvoice(file) {
     fillFrom(j.invoice);
     $("dropNote").innerHTML = `<span class="file"></span><br>Drop another invoice to replace it.`;
     $("dropNote").querySelector(".file").textContent = file.name;
-    showMsg(`${j.invoice.items.length} items read from ${file.name}. Edit anything, then Export PDF.`, "ok");
+    const left = j.invoice.ignored.map((it) => `${it.item} (${fmt(it.qty)})`);
+    const n = j.invoice.items.length;
+    showMsg(`${n} item${n === 1 ? "" : "s"} read from ${file.name}.` +
+            (left.length ? ` Left off as ignored: ${left.join(", ")}.` : "") + " Edit anything, then Export PDF.", "ok");
   } catch (e) {
     showMsg(file.name + ": " + e.message, "bad");
   }
@@ -260,7 +307,7 @@ async function loadInvoice(file) {
 async function exportPdf() {
   const values = {};
   document.querySelectorAll("[data-value]").forEach((inp) => { values[inp.dataset.value] = inp.value; });
-  const packed = items.map((it) => parseNum(it.packed));
+  const packed = items.filter((it) => it.item.trim()).map((it) => parseNum(it.packed));
   if (packed.some((p) => p !== null)) values["Qty Packed Total"] = fmt(packed.reduce((a, p) => a + (p ?? 0), 0));
   const body = { number: $("number").value, po: $("po").value, date: $("date").value, ship_to: $("ship_to").value,
                  seller: $("seller").value, values, items };
@@ -294,12 +341,16 @@ drop.addEventListener("drop", (e) => loadInvoice(e.dataTransfer.files[0]));
 window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", (e) => { e.preventDefault(); if (!drop.contains(e.target)) loadInvoice(e.dataTransfer.files[0]); });
 
-$("add").addEventListener("click", () => {
-  items.push({ item: "", qty: "1", packed: "" });
+// a blank line at index at, scrolled into view with its item name ready to type
+function insertLine(at) {
+  items.splice(at, 0, { item: "", qty: "1", packed: "" });
   render();
-  const last = $("rows").rows[items.length - 1].querySelector('[data-k="item"]');
-  last.focus();
-});
+  const row = $("rows").rows[at];
+  row.scrollIntoView({ block: "center" });
+  row.querySelector('[data-k="item"]').focus();
+}
+$("add").addEventListener("click", () => insertLine(items.length));
+$("addTop").addEventListener("click", () => insertLine(items.length));
 $("fillPacked").addEventListener("click", () => { items.forEach((it) => { it.packed = it.qty; }); render(); });
 $("clearPacked").addEventListener("click", () => { items.forEach((it) => { it.packed = ""; }); render(); });
 $("export").addEventListener("click", exportPdf);
@@ -309,9 +360,73 @@ $("reset").addEventListener("click", () => {
   ["number", "po", "date", "ship_to"].forEach((id) => { $(id).value = ""; });
   document.querySelectorAll("[data-value]").forEach((inp) => { inp.value = ""; });
   $("seller").value = DEFAULT_SELLER;
-  $("dropNote").textContent = "or click to choose. Items and quantities fill the table; Powder Coating is left off.";
+  $("dropNote").textContent = "or click to choose. Items and quantities fill the table; ignored items (Settings) are left off.";
   showMsg("");
   render();
+});
+
+// Settings: the ignore list in config.json
+let ignoreItems = [];
+
+function renderIgnore() {
+  const ul = $("ignoreList");
+  ul.innerHTML = "";
+  if (!ignoreItems.length) {
+    ul.innerHTML = '<li class="none">Nothing ignored: every invoice line goes on the slip.</li>';
+    return;
+  }
+  ignoreItems.forEach((name, i) => {
+    const li = document.createElement("li");
+    li.innerHTML = '<input aria-label="Ignored item"><button type="button" class="icon" title="Remove">✕</button>';
+    const inp = li.querySelector("input");
+    inp.value = name;
+    inp.addEventListener("input", () => { ignoreItems[i] = inp.value; });
+    li.querySelector("button").addEventListener("click", () => { ignoreItems.splice(i, 1); renderIgnore(); });
+    ul.appendChild(li);
+  });
+}
+
+function addIgnore() {
+  const v = $("ignoreNew").value.trim();
+  if (!v) return;
+  if (!ignoreItems.some((s) => s.trim().toLowerCase() === v.toLowerCase())) ignoreItems.push(v);
+  $("ignoreNew").value = "";
+  renderIgnore();
+  $("ignoreNew").focus();
+}
+
+$("openSettings").addEventListener("click", async () => {
+  $("settingsErr").textContent = "";
+  try {
+    const j = await (await fetch("/api/config")).json();
+    if (j.error) throw new Error(j.error);
+    ignoreItems = j.config.ignore_items.slice();
+  } catch (e) {
+    ignoreItems = [];
+    $("settingsErr").textContent = "Could not read the settings: " + e.message;
+  }
+  renderIgnore();
+  $("settings").showModal();
+  $("ignoreNew").focus();
+});
+$("ignoreAdd").addEventListener("click", addIgnore);
+$("ignoreNew").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addIgnore(); } });
+$("settingsCancel").addEventListener("click", () => $("settings").close());
+$("settingsForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if ($("ignoreNew").value.trim()) addIgnore();  // typed but not added yet
+  try {
+    const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" },
+                                           body: JSON.stringify({ ignore_items: ignoreItems }) });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    $("settings").close();
+    const n = j.config.ignore_items.length;
+    showMsg(`Settings saved: ${n} ignored item${n === 1 ? "" : "s"}.` +
+            (items.length ? " Drop the invoice again to apply them to this slip." : ""), "ok");
+  } catch (err) {
+    $("settingsErr").textContent = "Not saved: " + err.message;
+  }
 });
 
 $("seller").value = DEFAULT_SELLER;

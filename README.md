@@ -3,7 +3,22 @@
 `packing_slip.py` turns an invoice PDF (the Wave invoice layout) into a packing slip: the invoice's ship-to
 (or bill-to) and invoice number, then each line's item and quantity ordered with an empty **Qty Packed** box to
 fill in, a total, and lines for packed by, date, number of boxes and received by. Descriptions and prices are left off,
-and Powder Coating lines are never listed (`SKIP_ITEMS` in `packing_slip.py`).
+and so are line items on the ignore list.
+
+## Line items to ignore
+
+`config.json` lists invoice lines that never go on a packing slip (Powder Coating to start). Edit it in the
+UI under **Settings**, or by hand:
+
+```json
+{ "ignore_items": ["Powder Coating", "Shipping", "Rush fee*"] }
+```
+
+Names match ignoring capitals and extra spaces, and `*` matches anything (`Rush fee*` also catches
+"Rush fee - 2 day"). When an invoice loads, the UI says which lines it left off; the command line prints
+them too. `--config FILE` points the command line at a different file.
+
+## Usage
 
 Run the browser UI to read an invoice into a table you can edit before exporting:
 

@@ -58,17 +58,30 @@ PAGE2 = [(21.5, 597, "Items", True), (301.7, 597, "Quantity", True), (466.3, 597
          (390, 300, "Subtotal:", True), (553, 300, "$2,400.00", False)]
 
 
+IGNORE = ["Powder Coating"]  # explicit, so tests don't depend on the local config.json
+
+
 class PackingSlipTest(unittest.TestCase):
     def setUp(self):
-        self.inv = packing_slip.parse_invoice(invoice_pdf([PAGE1, PAGE2]))
+        self.inv = packing_slip.parse_invoice(invoice_pdf([PAGE1, PAGE2]), IGNORE)
 
     def test_items(self):
         self.assertEqual(self.inv["items"], [("PRD-001 Rev B", 14), ("PRD-002", 1200)])  # no Powder Coating
+        self.assertEqual(self.inv["ignored"], [("Powder Coating", 1)])
+
+    def test_ignore_patterns(self):
+        pdf = invoice_pdf([PAGE1, PAGE2])
+        names = lambda ignore: [s for s, _ in packing_slip.parse_invoice(pdf, ignore)["items"]]
+        self.assertEqual(names([]), ["PRD-001 Rev B", "PRD-002", "Powder Coating"])
+        self.assertEqual(names(["prd-001*", "POWDER  coating"]), ["PRD-002"])  # case, spaces, wildcard
+        self.assertEqual(names(["PRD-001"]), ["PRD-001 Rev B", "PRD-002", "Powder Coating"])  # whole name only
+        self.assertTrue(packing_slip.ignored("Bracket [A]?", ["bracket [a]?"]))  # only * is special
+        self.assertFalse(packing_slip.ignored("Bracket A", ["bracket [a]"]))
 
     def test_only_powder_coating(self):
         page = HEADER + [(21.5, 509, "POWDER COATING", True), (319.1, 509, "1", False)]
         with self.assertRaisesRegex(ValueError, "nothing to pack"):
-            packing_slip.parse_invoice(invoice_pdf([page]))
+            packing_slip.parse_invoice(invoice_pdf([page]), IGNORE)
 
     def test_header(self):
         self.assertEqual(self.inv["number"], "77")
@@ -105,7 +118,7 @@ class PackingSlipTest(unittest.TestCase):
 
     def test_not_an_invoice(self):
         with self.assertRaises(ValueError):
-            packing_slip.parse_invoice(invoice_pdf([[(21.5, 700, "Hello", True)]]))
+            packing_slip.parse_invoice(invoice_pdf([[(21.5, 700, "Hello", True)]]), IGNORE)
 
     def test_po_blank_is_fillable(self):
         pdf = packing_slip.packing_slip_pdf(dict(self.inv, po="", values={"P.O. Number": "PO-9"}))
@@ -161,7 +174,7 @@ class LogoTest(unittest.TestCase):
 
     def test_slip_with_logo(self):
         path = self.write(png_bytes(4, 4, [[(0, 0, 0, 255 * (x == y)) for x in range(4)] for y in range(4)], 6))
-        inv = packing_slip.parse_invoice(invoice_pdf([PAGE1, PAGE2]))
+        inv = packing_slip.parse_invoice(invoice_pdf([PAGE1, PAGE2]), IGNORE)
         pdf = packing_slip.packing_slip_pdf(inv, logo=path)
         self.assertEqual(len(re.findall(rb"/Subtype /Image", pdf)), 2)  # color + soft mask, shared by pages
         self.assertIn(b"/SMask", pdf)
@@ -172,6 +185,33 @@ class LogoTest(unittest.TestCase):
         png = packing_slip.load_logo(packing_slip.LOGO)
         self.assertIsNotNone(png, "logo.png is missing next to packing_slip.py")
         self.assertEqual(len(zlib.decompress(png.color)), png.w * png.h * png.colors)
+
+
+class ConfigTest(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.path = str(pathlib.Path(d.name) / "config.json")
+
+    def test_defaults_when_missing(self):
+        self.assertEqual(packing_slip.load_config(self.path)["ignore_items"], ["Powder Coating"])
+
+    def test_save_cleans_and_round_trips(self):
+        saved = packing_slip.save_config({"ignore_items": [" Shipping ", "", "shipping", "Powder  Coat*"]}, self.path)
+        self.assertEqual(saved["ignore_items"], ["Shipping", "Powder Coat*"])
+        self.assertEqual(packing_slip.load_config(self.path), saved)
+        packing_slip.save_config({"ignore_items": []}, self.path)
+        self.assertEqual(packing_slip.load_config(self.path)["ignore_items"], [])  # empty list is kept
+
+    def test_bad_config(self):
+        with self.assertRaises(ValueError):
+            packing_slip.save_config({"ignore_items": "Shipping"}, self.path)
+        pathlib.Path(self.path).write_text("{not json")
+        with self.assertRaisesRegex(ValueError, "config.json"):
+            packing_slip.load_config(self.path)
+
+    def test_local_config_is_valid(self):  # whatever is ignored locally, config.json must load
+        self.assertIsInstance(packing_slip.load_config()["ignore_items"], list)
 
 
 class SlipUiTest(unittest.TestCase):
