@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packing Slip</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5d6673; --line: #dfe3e8;
+  --accent: #d9480f; --accent-ink: #ffffff; --accent-soft: #fff1ea;
+  --warn: #9a6700; --warn-soft: #fff8e1; --bad: #c92a2a; --bad-soft: #fff0f0; --ok: #2b8a3e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418; --panel: #1a1e24; --ink: #e8eaed; --muted: #9aa3ae; --line: #2c323a;
+    --accent: #ff7a3d; --accent-ink: #111418; --accent-soft: #2e1d14;
+    --warn: #f0c050; --warn-soft: #2a2412; --bad: #ff8080; --bad-soft: #2d1717; --ok: #69db7c;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.num { font-variant-numeric: tabular-nums; }
+header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 24px;
+  background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
+header h1 { font-size: 17px; margin: 0 auto 0 0; }
+header h1 span { color: var(--accent); }
+button, input, textarea { font: inherit; color: inherit; }
+button { border: 1px solid var(--line); background: var(--panel); border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.icon { padding: 3px 8px; border-color: transparent; background: transparent; color: var(--muted); }
+button.icon:hover:not(:disabled) { border-color: var(--line); color: var(--ink); }
+main { max-width: 1280px; margin: 0 auto; padding: 20px 24px 60px; display: grid; gap: 20px;
+  grid-template-columns: 320px minmax(0, 1fr); align-items: start; }
+@media (max-width: 860px) {
+  main { grid-template-columns: minmax(0, 1fr); padding: 16px; }
+  header { padding: 12px 16px; }
+}
+.side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.drop { border: 2px dashed var(--line); border-radius: 12px; background: var(--panel); text-align: center;
+  padding: 22px 16px; cursor: pointer; transition: .15s; }
+.drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.drop strong { font-size: 15px; }
+.drop p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+.drop .file { color: var(--ink); font-weight: 600; word-break: break-all; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 8px; }
+.card label { display: block; margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+.card input, .card textarea { display: block; width: 100%; margin-top: 3px; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.card textarea { resize: vertical; min-height: 74px; line-height: 1.35; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.msg { border-radius: 10px; padding: 10px 14px; margin: 0 0 12px; display: none; }
+.msg.bad { display: block; background: var(--bad-soft); color: var(--bad); }
+.msg.ok { display: block; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
+.tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted);
+  font-weight: 600; padding: 10px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 4px 8px; border-bottom: 1px solid var(--line); }
+tbody tr:last-child td { border-bottom: 0; }
+th.n, td.n { text-align: right; }
+td.idx { color: var(--muted); width: 36px; text-align: right; }
+td input { width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; }
+td input:hover { border-color: var(--line); }
+td input:focus { border-color: var(--accent); background: var(--bg); outline: none; }
+td.item input { font-weight: 600; min-width: 180px; }
+td.n input { text-align: right; width: 90px; }
+td.packed input { border-color: var(--line); background: var(--bg); text-align: center; }
+td.packed.short input { border-color: var(--warn); background: var(--warn-soft); }
+td.packed.over input { border-color: var(--bad); background: var(--bad-soft); }
+td.packed.done input { border-color: var(--ok); }
+td input.invalid { border-color: var(--bad); background: var(--bad-soft); }
+td.act { white-space: nowrap; width: 1%; }
+tfoot td { font-weight: 700; border-top: 1px solid var(--line); border-bottom: 0; padding: 10px 16px; }
+tfoot td.n { padding-right: 16px; }
+.tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
+.tools .hint { color: var(--muted); font-size: 12px; margin-left: auto; }
+.empty { padding: 40px 20px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>MCY <span>Packing Slip</span></h1>
+  <button id="reset" title="Clear the slip and start over">New slip</button>
+  <button id="export" class="primary" disabled>Export PDF</button>
+</header>
+
+<main>
+  <aside class="side">
+    <div class="drop" id="drop" tabindex="0">
+      <strong>Drop an invoice PDF</strong>
+      <p id="dropNote">or click to choose. Items and quantities fill the table; Powder Coating is left off.</p>
+      <input type="file" id="file" accept="application/pdf,.pdf" hidden>
+    </div>
+
+    <div class="card">
+      <h2>Invoice</h2>
+      <div class="row2">
+        <label>Invoice number<input id="number" autocomplete="off"></label>
+        <label>P.O. number<input id="po" autocomplete="off"></label>
+      </div>
+      <div class="row2">
+        <label>Invoice date<input id="date" autocomplete="off"></label>
+        <label>Ship date<input data-value="Ship Date" autocomplete="off"></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Ship to</h2>
+      <textarea id="ship_to" rows="4" placeholder="Company&#10;Contact&#10;Street&#10;City, State ZIP"></textarea>
+    </div>
+
+    <div class="card">
+      <h2>From</h2>
+      <textarea id="seller" rows="5"></textarea>
+    </div>
+
+    <div class="card">
+      <h2>Sign-off <span style="text-transform:none;letter-spacing:0">(optional, still fillable in the PDF)</span></h2>
+      <label>Packed by<input data-value="Packed By" autocomplete="off"></label>
+      <div class="row2">
+        <label>Date<input data-value="Packed Date" autocomplete="off"></label>
+        <label>No. of boxes<input data-value="No. of Boxes" autocomplete="off"></label>
+      </div>
+    </div>
+  </aside>
+
+  <section>
+    <div class="msg" id="msg"></div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th style="text-align:right">#</th><th>Item</th><th class="n">Qty ordered</th>
+          <th style="text-align:center">Qty packed</th><th></th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+        <tfoot id="foot"></tfoot>
+      </table>
+      <div class="empty" id="empty">No items yet. Drop an invoice, or add a line.</div>
+    </div>
+    <div class="tools">
+      <button id="add">+ Add line</button>
+      <button id="fillPacked" title="Set every Qty packed to its Qty ordered">Packed = ordered</button>
+      <button id="clearPacked">Clear packed</button>
+      <span class="hint">Leave Qty packed blank to fill it in by hand or in Preview.</span>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const DEFAULT_SELLER = "MCY Industries\n45845 Warm Springs Boulevard\nSuite E\nFremont, California 94539\nUnited States";
+let items = [];  // [{item, qty, packed}]
+
+function parseNum(s) {
+  const t = String(s ?? "").replace(/,/g, "").trim();
+  return t === "" || isNaN(Number(t)) ? null : Number(t);
+}
+const fmt = (n) => n.toLocaleString("en-US", { maximumFractionDigits: 3 });
+
+function showMsg(text, kind) {
+  const m = $("msg");
+  m.textContent = text || "";
+  m.className = "msg" + (text ? " " + kind : "");
+}
+
+function render() {
+  const body = $("rows");
+  body.innerHTML = "";
+  items.forEach((it, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="idx num">${i + 1}</td>
+      <td class="item"><input aria-label="Item" data-k="item"></td>
+      <td class="n"><input class="num" aria-label="Qty ordered" data-k="qty" inputmode="decimal"></td>
+      <td class="packed n"><input class="num" aria-label="Qty packed" data-k="packed" inputmode="decimal"></td>
+      <td class="act">
+        <button class="icon" data-a="up" title="Move up" ${i ? "" : "disabled"}>↑</button>
+        <button class="icon" data-a="down" title="Move down" ${i < items.length - 1 ? "" : "disabled"}>↓</button>
+        <button class="icon" data-a="del" title="Remove line">✕</button>
+      </td>`;
+    tr.querySelectorAll("input").forEach((inp) => {
+      inp.value = it[inp.dataset.k] ?? "";
+      inp.addEventListener("input", () => { it[inp.dataset.k] = inp.value; refresh(); });
+      inp.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();  // Enter moves down the same column
+        const next = body.rows[i + 1]?.querySelector(`[data-k="${inp.dataset.k}"]`);
+        if (next) { next.focus(); next.select(); }
+      });
+    });
+    tr.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+      if (b.dataset.a === "del") items.splice(i, 1);
+      else {
+        const j = b.dataset.a === "up" ? i - 1 : i + 1;
+        [items[i], items[j]] = [items[j], items[i]];
+      }
+      render();
+    }));
+    body.appendChild(tr);
+  });
+  $("empty").style.display = items.length ? "none" : "block";
+  refresh();
+}
+
+// totals, highlights and the export button, without rebuilding the inputs being typed in
+function refresh() {
+  let ordered = 0, packed = 0, anyPacked = false, bad = false;
+  [...$("rows").rows].forEach((tr, i) => {
+    const it = items[i], q = parseNum(it.qty), p = parseNum(it.packed);
+    const qIn = tr.querySelector('[data-k="qty"]'), pIn = tr.querySelector('[data-k="packed"]');
+    qIn.classList.toggle("invalid", q === null && it.item.trim() !== "");
+    const badPacked = String(it.packed ?? "").trim() !== "" && p === null;
+    pIn.classList.toggle("invalid", badPacked);
+    if ((q === null && it.item.trim() !== "") || badPacked) bad = true;
+    if (q !== null) ordered += q;
+    const cell = pIn.parentElement;
+    cell.classList.remove("short", "over", "done");
+    if (p !== null && !badPacked) {
+      anyPacked = true; packed += p;
+      if (q !== null) cell.classList.add(p < q ? "short" : p > q ? "over" : "done");
+    }
+  });
+  $("foot").innerHTML = items.length ? `<tr><td></td><td>Total (${items.length} line${items.length === 1 ? "" : "s"})</td>
+    <td class="n num">${fmt(ordered)}</td><td class="n num" style="text-align:center">${anyPacked ? fmt(packed) : "—"}</td><td></td></tr>` : "";
+  $("export").disabled = !items.some((it) => it.item.trim()) || bad;
+  $("export").title = bad ? "Fix the highlighted quantities first" : "";
+}
+
+function fillFrom(inv) {
+  $("number").value = inv.number || "";
+  $("po").value = inv.po || "";
+  $("date").value = inv.date || "";
+  $("ship_to").value = (inv.ship_to || []).join("\n");
+  if (inv.seller && inv.seller.length) $("seller").value = inv.seller.join("\n");
+  items = inv.items.map((it) => ({ item: it.item, qty: String(it.qty), packed: "" }));
+  render();
+}
+
+async function loadInvoice(file) {
+  if (!file) return;
+  if (items.length && !confirm("Replace the current slip with " + file.name + "?")) return;
+  showMsg("Reading " + file.name + "…", "ok");
+  try {
+    const r = await fetch("/api/parse", { method: "POST", body: file });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    fillFrom(j.invoice);
+    $("dropNote").innerHTML = `<span class="file"></span><br>Drop another invoice to replace it.`;
+    $("dropNote").querySelector(".file").textContent = file.name;
+    showMsg(`${j.invoice.items.length} items read from ${file.name}. Edit anything, then Export PDF.`, "ok");
+  } catch (e) {
+    showMsg(file.name + ": " + e.message, "bad");
+  }
+}
+
+async function exportPdf() {
+  const values = {};
+  document.querySelectorAll("[data-value]").forEach((inp) => { values[inp.dataset.value] = inp.value; });
+  const packed = items.map((it) => parseNum(it.packed));
+  if (packed.some((p) => p !== null)) values["Qty Packed Total"] = fmt(packed.reduce((a, p) => a + (p ?? 0), 0));
+  const body = { number: $("number").value, po: $("po").value, date: $("date").value, ship_to: $("ship_to").value,
+                 seller: $("seller").value, values, items };
+  $("export").disabled = true;
+  try {
+    const r = await fetch("/api/pdf", { method: "POST", headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify(body) });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "Packing Slip " + ($("number").value.trim() || "draft") + ".pdf";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    showMsg("Exported " + a.download + " to your Downloads folder.", "ok");
+  } catch (e) {
+    showMsg("Export failed: " + e.message, "bad");
+  } finally {
+    refresh();
+  }
+}
+
+const drop = $("drop");
+drop.addEventListener("click", () => $("file").click());
+drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+$("file").addEventListener("change", (e) => { loadInvoice(e.target.files[0]); e.target.value = ""; });
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => loadInvoice(e.dataTransfer.files[0]));
+// a PDF dropped anywhere on the page loads too, instead of the browser opening it
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => { e.preventDefault(); if (!drop.contains(e.target)) loadInvoice(e.dataTransfer.files[0]); });
+
+$("add").addEventListener("click", () => {
+  items.push({ item: "", qty: "1", packed: "" });
+  render();
+  const last = $("rows").rows[items.length - 1].querySelector('[data-k="item"]');
+  last.focus();
+});
+$("fillPacked").addEventListener("click", () => { items.forEach((it) => { it.packed = it.qty; }); render(); });
+$("clearPacked").addEventListener("click", () => { items.forEach((it) => { it.packed = ""; }); render(); });
+$("export").addEventListener("click", exportPdf);
+$("reset").addEventListener("click", () => {
+  if (items.length && !confirm("Clear this slip?")) return;
+  items = [];
+  ["number", "po", "date", "ship_to"].forEach((id) => { $(id).value = ""; });
+  document.querySelectorAll("[data-value]").forEach((inp) => { inp.value = ""; });
+  $("seller").value = DEFAULT_SELLER;
+  $("dropNote").textContent = "or click to choose. Items and quantities fill the table; Powder Coating is left off.";
+  showMsg("");
+  render();
+});
+
+$("seller").value = DEFAULT_SELLER;
+render();
+</script>
+</body>
+</html>

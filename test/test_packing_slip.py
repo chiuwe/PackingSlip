@@ -1,0 +1,199 @@
+"""Tests for packing_slip.py: items and quantities read from a Wave-style invoice PDF
+(hex strings, ToUnicode fonts, items continuing across pages), and the slip PDF lists them.
+
+    python3 test/test_packing_slip.py
+"""
+import pathlib
+import re
+import sys
+import tempfile
+import unittest
+import zlib
+
+ROOT = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT.parent))
+import packing_slip  # noqa: E402
+import slip_ui  # noqa: E402
+
+CMAP = (b"/CIDInit /ProcSet findresource begin begincmap 1 begincodespacerange <00><ff> endcodespacerange "
+        b"1 beginbfrange <20><7e><0020> endbfrange endcmap end")
+
+
+def invoice_pdf(pages):
+    """A PDF laid out like a Wave invoice; pages are lists of (x, y, text, bold)."""
+    objs = {3: b"<< /Type /Font /Subtype /TrueType /BaseFont /ab+Sans-Regular /ToUnicode 5 0 R >>",
+            4: b"<< /Type /Font /Subtype /TrueType /BaseFont /ab+Sans-Bold /ToUnicode 5 0 R >>",
+            5: b"<< /Length %d /Filter [/FlateDecode] >>\nstream\n" % len(zlib.compress(CMAP))
+            + zlib.compress(CMAP) + b"\nendstream"}
+    kids = []
+    for runs in pages:
+        ops = "\n".join("BT\n%s %s Td\n/%s 10 Tf\n<%s> Tj\nET" % (x, y, "F2.0" if b else "F1.0", s.encode().hex())
+                        for x, y, s, b in runs).encode()
+        n = max(objs) + 1
+        objs[n] = b"<< /Length %d /Filter [/FlateDecode] >>\nstream\n" % len(zlib.compress(ops)) \
+            + zlib.compress(ops) + b"\nendstream"
+        objs[n + 1] = (b"<< /Type /Page /Parent 2 0 R /Contents %d 0 R "
+                       b"/Resources << /Font << /F1.0 3 0 R\n/F2.0 4 0 R\n>> >> >>" % n)
+        kids.append(n + 1)
+    objs[1] = b"<< /Type /Catalog\n/Pages 2 0 R\n>>"
+    objs[2] = b"<< /Type /Pages /Count %d /Kids [%s] >>" % (len(kids), b" ".join(b"%d 0 R" % k for k in kids))
+    return b"%PDF-1.4\n" + b"".join(b"%d 0 obj\n%s\nendobj\n" % (n, objs[n]) for n in sorted(objs))
+
+
+HEADER = [(21.5, 535, "Items", True), (301.7, 535, "Quantity", True), (466.3, 535, "Price", True),
+          (554.4, 535, "Amount", True)]
+PAGE1 = [(468, 740, "INVOICE", False), (520, 710, "Acme Fab", True), (447, 698, "1 Main St", False),
+         (21.5, 616, "BILL TO", False), (21.5, 604, "Widget Co.", True), (21.5, 591, "Pat Doe", False),
+         (404, 618, "Invoice Number:", True), (490, 618, "77", False),
+         (395, 610, "P.O./S.O. Number:", True), (490, 610, "PO5781", False),
+         (420, 601, "Invoice Date:", True), (490, 601, "May 1, 2026", False),
+         (391, 568, "Amount Due (USD):", True), (490, 568, "$0.00", True)] + HEADER + [
+    (21.5, 509, "PRD-001 Rev B", True), (21.5, 497, '1/8" Alum', False), (317.3, 509, "14", False),
+    (457.6, 509, "$50.00", False), (553.7, 509, "$700.00", False), (21.5, 484, "Bent", False),
+    (21.5, 79, "PRD-002", True), (319.1, 79, "1,200", False), (457.6, 79, "$1.00", False),
+    (243, 25, "Page 1 of 2 for Invoice #77", False)]
+PAGE2 = [(21.5, 597, "Items", True), (301.7, 597, "Quantity", True), (466.3, 597, "Price", True),
+         (21.5, 578, "M6 Pemnut", False),  # PRD-002's description continued
+         (21.5, 552, "Powder Coating", True), (319.1, 552, "1", False), (453, 552, "$500.00", False),
+         (390, 300, "Subtotal:", True), (553, 300, "$2,400.00", False)]
+
+
+class PackingSlipTest(unittest.TestCase):
+    def setUp(self):
+        self.inv = packing_slip.parse_invoice(invoice_pdf([PAGE1, PAGE2]))
+
+    def test_items(self):
+        self.assertEqual(self.inv["items"], [("PRD-001 Rev B", 14), ("PRD-002", 1200)])  # no Powder Coating
+
+    def test_only_powder_coating(self):
+        page = HEADER + [(21.5, 509, "POWDER COATING", True), (319.1, 509, "1", False)]
+        with self.assertRaisesRegex(ValueError, "nothing to pack"):
+            packing_slip.parse_invoice(invoice_pdf([page]))
+
+    def test_header(self):
+        self.assertEqual(self.inv["number"], "77")
+        self.assertEqual(self.inv["date"], "May 1, 2026")
+        self.assertEqual(self.inv["po"], "PO5781")
+        self.assertEqual(self.inv["ship_to"], ["Widget Co.", "Pat Doe"])
+        self.assertEqual(self.inv["seller"], ["Acme Fab", "1 Main St"])
+
+    def test_slip_reads_back(self):
+        pdf = packing_slip.packing_slip_pdf(self.inv)
+        self.assertTrue(pdf.startswith(b"%PDF-") and pdf.rstrip().endswith(b"%%EOF"))
+        text = [r[2] for page in packing_slip.PdfText(pdf).all_pages() for r in page]
+        for s in ("PACKING SLIP", "Qty Ordered", "Qty Packed", "PRD-001 Rev B", "14", "1,200", "1,214",
+                  "Widget Co.", "77", "P.O. Number:", "PO5781"):
+            self.assertIn(s, text)
+        for s in ('1/8" Alum', "Bent", "$50.00", "Powder Coating"):  # descriptions, prices, powder coating left off
+            self.assertNotIn(s, text)
+
+    def test_fillable_fields(self):
+        pdf = packing_slip.packing_slip_pdf(self.inv)
+        self.assertIn(b"/AcroForm", pdf)
+        names = re.findall(rb"/FT /Tx /T \(([^)]*)\)", pdf)
+        self.assertEqual([n.decode() for n in names],
+                         ["Ship Date", "Qty Packed 1", "Qty Packed 2", "Qty Packed Total", "Packed By",
+                          "Packed Date", "No. of Boxes", "Received By", "Received Date"])
+
+    def test_long_invoice_paginates(self):
+        inv = dict(self.inv, items=[("PRD-%03d" % i, 4) for i in range(60)])
+        pages = packing_slip.PdfText(packing_slip.packing_slip_pdf(inv)).all_pages()
+        self.assertGreater(len(pages), 1)
+        text = [r[2] for page in pages for r in page]
+        self.assertEqual(sum(t.startswith("PRD-") for t in text), 60)
+        self.assertIn("Page %d of %d for Packing Slip #77" % (len(pages), len(pages)), text)
+
+    def test_not_an_invoice(self):
+        with self.assertRaises(ValueError):
+            packing_slip.parse_invoice(invoice_pdf([[(21.5, 700, "Hello", True)]]))
+
+    def test_po_blank_is_fillable(self):
+        pdf = packing_slip.packing_slip_pdf(dict(self.inv, po="", values={"P.O. Number": "PO-9"}))
+        self.assertIn(b"/T (P.O. Number)", pdf)
+        self.assertIn(b"/V (PO-9)", pdf)
+
+    def test_prefilled_fields(self):
+        inv = dict(self.inv, values={"Qty Packed 2": "1,100", "Packed By": "Sam", "Ship Date": ""})
+        pdf = packing_slip.packing_slip_pdf(inv)
+        self.assertIn(b"/T (Qty Packed 2)", pdf)
+        self.assertEqual(sorted(re.findall(rb"/V \(([^)]*)\)", pdf)), [b"1,100", b"Sam"])  # blank stays unfilled
+
+
+def png_bytes(w, h, pixels, ctype):
+    """A PNG of rows of pixel tuples, each row using a different filter (0-4) to cover unfilter()."""
+    bpp = len(pixels[0][0])
+    raw, prev = bytearray(), bytes(w * bpp)
+    for y, row in enumerate(pixels):
+        line = bytes(v for px in row for v in px)
+        ft = y % 5
+        out = bytearray()
+        for i, v in enumerate(line):
+            a = line[i - bpp] if i >= bpp else 0
+            b, c = prev[i], prev[i - bpp] if i >= bpp else 0
+            p = a + b - c
+            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            pred = [0, a, b, (a + b) >> 1, a if pa <= pb and pa <= pc else b if pb <= pc else c][ft]
+            out.append((v - pred) & 0xFF)
+        raw += bytes([ft]) + out
+        prev = line
+
+    def chunk(kind, body):
+        return len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+    ihdr = w.to_bytes(4, "big") + h.to_bytes(4, "big") + bytes([8, ctype, 0, 0, 0])
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(bytes(raw))) + chunk(b"IEND", b"")
+
+
+class LogoTest(unittest.TestCase):
+    def write(self, data):
+        f = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        f.write(data)
+        f.close()
+        self.addCleanup(pathlib.Path(f.name).unlink)
+        return f.name
+
+    def test_rgba_split_into_color_and_alpha(self):
+        pixels = [[((x * 40 + y) % 256, (y * 30) % 256, (x * y * 7) % 256, (x * 50 + y * 9) % 256)
+                   for x in range(6)] for y in range(7)]
+        png = packing_slip.Png(self.write(png_bytes(6, 7, pixels, 6)))
+        self.assertEqual((png.w, png.h, png.colors, png.predicted), (6, 7, 3, False))
+        self.assertEqual(zlib.decompress(png.color), bytes(v for row in pixels for px in row for v in px[:3]))
+        self.assertEqual(zlib.decompress(png.alpha), bytes(px[3] for row in pixels for px in row))
+
+    def test_slip_with_logo(self):
+        path = self.write(png_bytes(4, 4, [[(0, 0, 0, 255 * (x == y)) for x in range(4)] for y in range(4)], 6))
+        inv = packing_slip.parse_invoice(invoice_pdf([PAGE1, PAGE2]))
+        pdf = packing_slip.packing_slip_pdf(inv, logo=path)
+        self.assertEqual(len(re.findall(rb"/Subtype /Image", pdf)), 2)  # color + soft mask, shared by pages
+        self.assertIn(b"/SMask", pdf)
+        self.assertNotIn(b"/Subtype /Image", packing_slip.packing_slip_pdf(inv, logo=None))
+        self.assertNotIn(b"/Subtype /Image", packing_slip.packing_slip_pdf(inv, logo=path + ".missing"))
+
+    def test_shipped_logo_loads(self):
+        png = packing_slip.load_logo(packing_slip.LOGO)
+        self.assertIsNotNone(png, "logo.png is missing next to packing_slip.py")
+        self.assertEqual(len(zlib.decompress(png.color)), png.w * png.h * png.colors)
+
+
+class SlipUiTest(unittest.TestCase):
+    def test_page_state_to_slip(self):
+        inv = slip_ui.slip_from_page({
+            "number": " 77 ", "po": " PO5781 ", "date": "May 1", "ship_to": "Widget Co.\n\n  Pat Doe \n", "seller": "Acme",
+            "values": {"Ship Date": "May 2"},
+            "items": [{"item": "A", "qty": "1,200", "packed": "1200"}, {"item": "  ", "qty": ""},
+                      {"item": "B", "qty": "2.50", "packed": ""}]})
+        self.assertEqual(inv["number"], "77")
+        self.assertEqual(inv["po"], "PO5781")
+        self.assertEqual(inv["ship_to"], ["Widget Co.", "Pat Doe"])
+        self.assertEqual(inv["items"], [("A", 1200), ("B", 2.5)])  # blank lines dropped
+        self.assertEqual(inv["values"], {"Ship Date": "May 2", "Qty Packed 1": "1200", "Qty Packed 2": ""})
+        self.assertTrue(packing_slip.packing_slip_pdf(inv).startswith(b"%PDF-"))
+
+    def test_bad_quantity(self):
+        with self.assertRaisesRegex(ValueError, "line 1 \\(A\\)"):
+            slip_ui.slip_from_page({"items": [{"item": "A", "qty": "four"}]})
+        with self.assertRaisesRegex(ValueError, "no items"):
+            slip_ui.slip_from_page({"items": []})
+
+
+if __name__ == "__main__":
+    unittest.main()
