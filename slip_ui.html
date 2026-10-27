@@ -6,6 +6,7 @@
 <title>Packing Slip</title>
 <style>
 :root {
+  color-scheme: light dark;
   --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5d6673; --line: #dfe3e8;
   --accent: #d9480f; --accent-ink: #ffffff; --accent-soft: #fff1ea;
   --warn: #9a6700; --warn-soft: #fff8e1; --bad: #c92a2a; --bad-soft: #fff0f0; --ok: #2b8a3e;
@@ -45,6 +46,9 @@ main { max-width: 1280px; margin: 0 auto; padding: 20px 24px 60px; display: grid
 .drop strong { font-size: 15px; }
 .drop p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
 .drop .file { color: var(--ink); font-weight: 600; word-break: break-all; }
+.linkrow { display: flex; gap: 8px; margin: 0; }
+.linkrow input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.linkrow input:focus { border-color: var(--accent); outline: none; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
 .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 8px; }
 .card label { display: block; margin: 8px 0 0; font-size: 12px; color: var(--muted); }
@@ -116,6 +120,10 @@ dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
       <p id="dropNote">or click to choose. Items and quantities fill the table; ignored items (Settings) are left off.</p>
       <input type="file" id="file" accept="application/pdf,.pdf" hidden>
     </div>
+    <form class="linkrow" id="linkForm">
+      <input id="link" type="text" inputmode="url" spellcheck="false" placeholder="or paste a Wave invoice link" autocomplete="off" aria-label="Wave invoice link">
+      <button type="submit" id="linkLoad">Load</button>
+    </form>
 
     <div class="card">
       <h2>Invoice</h2>
@@ -125,7 +133,7 @@ dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
       </div>
       <div class="row2">
         <label>Invoice date<input id="date" autocomplete="off"></label>
-        <label>Ship date<input data-value="Ship Date" autocomplete="off"></label>
+        <label>Ship date<input type="date" id="shipDate"></label>
       </div>
     </div>
 
@@ -197,6 +205,17 @@ let items = [];  // [{item, qty, packed}]
 function parseNum(s) {
   const t = String(s ?? "").replace(/,/g, "").trim();
   return t === "" || isNaN(Number(t)) ? null : Number(t);
+}
+// today as the date input's YYYY-MM-DD, in local time
+function isoToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+// YYYY-MM-DD -> "October 26, 2026", the invoice's style; "" when cleared
+function longDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
+  return m ? new Date(+m[1], m[2] - 1, +m[3]).toLocaleDateString("en-US",
+    { month: "long", day: "numeric", year: "numeric" }) : "";
 }
 const fmt = (n) => n.toLocaleString("en-US", { maximumFractionDigits: 3 });
 
@@ -284,29 +303,46 @@ function fillFrom(inv) {
   render();
 }
 
-async function loadInvoice(file) {
-  if (!file) return;
-  if (items.length && !confirm("Replace the current slip with " + file.name + "?")) return;
-  showMsg("Reading " + file.name + "…", "ok");
+// fill the slip from /api/parse (a PDF file) or /api/parse-link (a Wave link); name labels the messages
+async function readInvoice(name, path, body, headers) {
+  if (items.length && !confirm("Replace the current slip with " + name + "?")) return false;
+  showMsg("Reading " + name + "…", "ok");
   try {
-    const r = await fetch("/api/parse", { method: "POST", body: file });
+    const r = await fetch(path, { method: "POST", body, headers });
     const j = await r.json();
     if (j.error) throw new Error(j.error);
     fillFrom(j.invoice);
     $("dropNote").innerHTML = `<span class="file"></span><br>Drop another invoice to replace it.`;
-    $("dropNote").querySelector(".file").textContent = file.name;
+    $("dropNote").querySelector(".file").textContent = name;
     const left = j.invoice.ignored.map((it) => `${it.item} (${fmt(it.qty)})`);
     const n = j.invoice.items.length;
-    showMsg(`${n} item${n === 1 ? "" : "s"} read from ${file.name}.` +
+    showMsg(`${n} item${n === 1 ? "" : "s"} read from ${name}.` +
             (left.length ? ` Left off as ignored: ${left.join(", ")}.` : "") + " Edit anything, then Export PDF.", "ok");
+    return true;
   } catch (e) {
-    showMsg(file.name + ": " + e.message, "bad");
+    showMsg(name + ": " + e.message, "bad");
+    return false;
+  }
+}
+const loadInvoice = (file) => file && readInvoice(file.name, "/api/parse", file);
+async function loadLink(link) {
+  link = (link || "").trim();
+  if (!link) return;
+  $("linkLoad").disabled = true;
+  const ok = await readInvoice("Wave invoice link", "/api/parse-link", JSON.stringify({ link }),
+                               { "Content-Type": "application/json" });
+  $("linkLoad").disabled = false;
+  if (ok) {
+    $("link").value = "";
+    const num = $("number").value.trim();
+    if (num) $("dropNote").querySelector(".file").textContent = "Invoice " + num + " (Wave link)";
   }
 }
 
 async function exportPdf() {
   const values = {};
   document.querySelectorAll("[data-value]").forEach((inp) => { values[inp.dataset.value] = inp.value; });
+  values["Ship Date"] = longDate($("shipDate").value);
   const packed = items.filter((it) => it.item.trim()).map((it) => parseNum(it.packed));
   if (packed.some((p) => p !== null)) values["Qty Packed Total"] = fmt(packed.reduce((a, p) => a + (p ?? 0), 0));
   const body = { number: $("number").value, po: $("po").value, date: $("date").value, ship_to: $("ship_to").value,
@@ -336,10 +372,14 @@ drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " "
 $("file").addEventListener("change", (e) => { loadInvoice(e.target.files[0]); e.target.value = ""; });
 ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
-drop.addEventListener("drop", (e) => loadInvoice(e.dataTransfer.files[0]));
+// a dropped PDF file, or a link dragged from the browser or an email
+const dropped = (e) => e.dataTransfer.files[0] ? loadInvoice(e.dataTransfer.files[0])
+  : loadLink((e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain")).split("\n")[0]);
+drop.addEventListener("drop", dropped);
+$("linkForm").addEventListener("submit", (e) => { e.preventDefault(); loadLink($("link").value); });
 // a PDF dropped anywhere on the page loads too, instead of the browser opening it
 window.addEventListener("dragover", (e) => e.preventDefault());
-window.addEventListener("drop", (e) => { e.preventDefault(); if (!drop.contains(e.target)) loadInvoice(e.dataTransfer.files[0]); });
+window.addEventListener("drop", (e) => { e.preventDefault(); if (!drop.contains(e.target) && e.target.id !== "link") dropped(e); });
 
 // a blank line at index at, scrolled into view with its item name ready to type
 function insertLine(at) {
@@ -359,6 +399,7 @@ $("reset").addEventListener("click", () => {
   items = [];
   ["number", "po", "date", "ship_to"].forEach((id) => { $(id).value = ""; });
   document.querySelectorAll("[data-value]").forEach((inp) => { inp.value = ""; });
+  $("shipDate").value = isoToday();
   $("seller").value = DEFAULT_SELLER;
   $("dropNote").textContent = "or click to choose. Items and quantities fill the table; ignored items (Settings) are left off.";
   showMsg("");
@@ -430,6 +471,7 @@ $("settingsForm").addEventListener("submit", async (e) => {
 });
 
 $("seller").value = DEFAULT_SELLER;
+$("shipDate").value = isoToday();
 render();
 </script>
 </body>

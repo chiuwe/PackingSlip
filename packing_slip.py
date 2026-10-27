@@ -3,6 +3,7 @@ packing_slip.py - make a packing slip PDF from an invoice PDF (the Wave invoice 
 
     python3 packing_slip.py Invoice_220_2026-10-14.pdf
     python3 packing_slip.py invoices/*.pdf -o "Packing slips"
+    python3 packing_slip.py https://link.waveapps.com/...   # a Wave invoice link (see wave_link.py)
 
 The slip lists each invoice line's item and quantity ordered, with an empty
 "Qty Packed" box to fill in by hand. Descriptions (material, Bent, Pemnut ...) and
@@ -17,6 +18,7 @@ one, otherwise BILL TO.
 Standard library only.
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -66,8 +68,10 @@ def pdf_str(s):
 
 
 class Png:
-    """An 8-bit, non-interlaced PNG split into PDF image data: color (gray or RGB) and an
-    optional alpha channel, each zlib-compressed. Palette and 16-bit PNGs are refused."""
+    """An 8-bit, non-interlaced PNG as PDF image data (gray or RGB, zlib-compressed).
+    Transparency is flattened onto white rather than kept as a soft mask: some printers
+    ignore soft masks and print the transparent area in its stored color (often black).
+    RGB that is all grays becomes gray. Palette and 16-bit PNGs are refused."""
 
     def __init__(self, path):
         with open(path, "rb") as f:
@@ -92,14 +96,17 @@ class Png:
             self.color, self.alpha, self.predicted = bytes(idat), None, True
             return
         bpp = self.colors + 1
-        rows = unfilter(zlib.decompress(bytes(idat)), self.w * bpp, bpp, self.h)
-        mv = memoryview(rows)
+        rows = memoryview(unfilter(zlib.decompress(bytes(idat)), self.w * bpp, bpp, self.h))
+        alpha = rows[self.colors::bpp]
+        # value over white: 255 - (255 - c) * a / 255, looked up by (a << 8) | c
+        blend = bytes(255 - ((255 - c) * a + 127) // 255 for a in range(256) for c in range(256))
+        chans = [bytes(blend[a << 8 | c] for c, a in zip(rows[k::bpp], alpha)) for k in range(self.colors)]
+        if self.colors == 3 and chans[0] == chans[1] == chans[2]:
+            chans, self.colors = chans[:1], 1
         color = bytearray(self.w * self.h * self.colors)
-        for c in range(self.colors):
-            color[c::self.colors] = mv[c::bpp]
-        self.color = zlib.compress(bytes(color))
-        self.alpha = zlib.compress(bytes(mv[self.colors::bpp]))
-        self.predicted = False
+        for k, ch in enumerate(chans):
+            color[k::self.colors] = ch
+        self.color, self.alpha, self.predicted = zlib.compress(bytes(color)), None, False
 
 
 def unfilter(raw, stride, bpp, height):
@@ -619,7 +626,8 @@ _logos = {}
 
 def packing_slip_pdf(inv, logo=LOGO):
     """The packing slip for a parse_invoice() result. inv["values"] (optional) pre-fills
-    form fields by name: "P.O. Number" (when inv["po"] is blank), "Ship Date", "Qty Packed <n>",
+    the slip by name: "P.O. Number" and "Ship Date" are printed as text when given (a blank one is
+    a fillable field), and these pre-fill form fields: "Qty Packed <n>",
     "Qty Packed Total", "Packed By", "Packed Date", "No. of Boxes", "Received By", "Received Date"."""
     values = {k: str(v) for k, v in (inv.get("values") or {}).items() if v not in (None, "")}
     png = load_logo(logo) if logo else None
@@ -653,15 +661,15 @@ def packing_slip_pdf(inv, logo=LOGO):
             pg.text(MARGIN, y, "SHIP TO", size=9, gray=0.45)
             for i, line in enumerate(inv["ship_to"][:6]):
                 pg.text(MARGIN, y - 13 * (i + 1), fit(line, 10, 250, i == 0), size=10, bold=i == 0)
-            # printed values, or a fillable line (None) when there is nothing to print
-            info = [("Invoice Number", inv["number"]), ("P.O. Number", inv.get("po") or None),
-                    ("Invoice Date", inv["date"]), ("Ship Date", None)]
+            # printed text when known, so every viewer and printer lines it up with the rest
+            # (Preview redraws form fields with its own padding); a fillable field when blank
+            info = [("Invoice Number", inv["number"]), ("P.O. Number", inv.get("po") or values.get("P.O. Number")),
+                    ("Invoice Date", inv["date"]), ("Ship Date", values.get("Ship Date"))]
             for i, (k, v) in enumerate(info):
                 yy = y - 13 * i
                 pg.text(445, yy, k + ":", size=10, bold=True, align="right")
-                if v is None:
-                    pg.line(452, yy - 2, PAGE_W - MARGIN, yy - 2, gray=0.4)
-                    pg.field(k, 452, yy - 3, PAGE_W - MARGIN - 452, 13, size=10, value=values.get(k, ""))
+                if not v:
+                    pg.field(k, 450, yy - 3, PAGE_W - MARGIN - 450, 13, size=10)
                 else:
                     pg.text(452, yy, v, size=10)
             y -= 13 * max(len(inv["ship_to"][:6]), len(info) - 1) + 34
@@ -710,10 +718,16 @@ def packing_slip_pdf(inv, logo=LOGO):
     return pdf_bytes(pages)
 
 
-def output_path(src, inv, out, many):
-    name = "Packing Slip %s.pdf" % (inv["number"] or os.path.splitext(os.path.basename(src))[0])
+def long_date(d):
+    """October 26, 2026 - the invoice's date style."""
+    return "%s %d, %d" % (d.strftime("%B"), d.day, d.year)
+
+
+def output_path(src, inv, out, many, link=False):
+    """Next to the invoice file (in the current folder for a link), or under -o."""
+    name = "Packing Slip %s.pdf" % (inv["number"] or ("invoice" if link else os.path.splitext(os.path.basename(src))[0]))
     if not out:
-        return os.path.join(os.path.dirname(os.path.abspath(src)), name)
+        return os.path.join(os.getcwd() if link else os.path.dirname(os.path.abspath(src)), name)
     if many or os.path.isdir(out) or out.endswith(os.sep):
         os.makedirs(out, exist_ok=True)
         return os.path.join(out, name)
@@ -722,10 +736,13 @@ def output_path(src, inv, out, many):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Make a packing slip PDF from an invoice PDF.")
-    ap.add_argument("invoices", nargs="+", help="invoice PDF file(s)")
+    ap.add_argument("invoices", nargs="+", help="invoice PDF file(s) or Wave invoice links")
     ap.add_argument("-o", "--out", help="output file (one invoice) or folder; default: next to each invoice")
     ap.add_argument("--config", default=CONFIG, help="config file with ignore_items (default: config.json here)")
+    ap.add_argument("--ship-date", default=long_date(datetime.date.today()),
+                    help='printed ship date (default: today); "" leaves it blank to fill in')
     args = ap.parse_args(argv)
+    import wave_link  # only the command line and UI fetch links
     try:
         ignore = load_config(args.config)["ignore_items"]
     except ValueError as e:
@@ -734,17 +751,21 @@ def main(argv=None):
     status = 0
     for src in args.invoices:
         try:
-            with open(src, "rb") as f:
-                inv = parse_invoice(f.read(), ignore)
+            if wave_link.is_wave_link(src):
+                inv = parse_invoice(wave_link.fetch_invoice_pdf(src), ignore)
+            else:
+                with open(src, "rb") as f:
+                    inv = parse_invoice(f.read(), ignore)
         except (OSError, ValueError) as e:
             print("%s: %s" % (src, e), file=sys.stderr)
             status = 1
             continue
-        path = output_path(src, inv, args.out, len(args.invoices) > 1)
+        path = output_path(src, inv, args.out, len(args.invoices) > 1, wave_link.is_wave_link(src))
         with open(path, "wb") as f:
-            f.write(packing_slip_pdf(inv))
-        print("%s -> %s  (%d items, %s pcs%s)" % (
-            src, path, len(inv["items"]), qty_text(sum(q for _, q in inv["items"])),
+            f.write(packing_slip_pdf(dict(inv, values={"Ship Date": args.ship_date})))
+        n = len(inv["items"])
+        print("%s -> %s  (%d item%s, %s pcs%s)" % (
+            src, path, n, "" if n == 1 else "s", qty_text(sum(q for _, q in inv["items"])),
             "; left off " + ", ".join(s for s, _ in inv["ignored"]) if inv["ignored"] else ""))
     return status
 

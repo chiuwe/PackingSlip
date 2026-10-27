@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote, urlparse
 
 import packing_slip
+import wave_link
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "slip_ui.html")
@@ -92,8 +93,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         url = urlparse(self.path)
         try:
-            if url.path == "/api/parse":
-                inv = packing_slip.parse_invoice(self.body())
+            if url.path in ("/api/parse", "/api/parse-link"):
+                if url.path == "/api/parse":
+                    data = self.body()
+                else:  # a Wave invoice link: download its PDF first
+                    data = wave_link.fetch_invoice_pdf(json.loads(self.body()).get("link") or "")
+                inv = packing_slip.parse_invoice(data)
                 self.send_json({"invoice": dict(inv, items=[{"item": s, "qty": q} for s, q in inv["items"]],
                                                 ignored=[{"item": s, "qty": q} for s, q in inv["ignored"]])})
             elif url.path == "/api/config":

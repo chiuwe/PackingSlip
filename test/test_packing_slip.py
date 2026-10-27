@@ -14,6 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT.parent))
 import packing_slip  # noqa: E402
 import slip_ui  # noqa: E402
+import wave_link  # noqa: E402
 
 CMAP = (b"/CIDInit /ProcSet findresource begin begincmap 1 begincodespacerange <00><ff> endcodespacerange "
         b"1 beginbfrange <20><7e><0020> endbfrange endcmap end")
@@ -120,10 +121,19 @@ class PackingSlipTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             packing_slip.parse_invoice(invoice_pdf([[(21.5, 700, "Hello", True)]]), IGNORE)
 
-    def test_po_blank_is_fillable(self):
-        pdf = packing_slip.packing_slip_pdf(dict(self.inv, po="", values={"P.O. Number": "PO-9"}))
-        self.assertIn(b"/T (P.O. Number)", pdf)
-        self.assertIn(b"/V (PO-9)", pdf)
+    def test_po_and_ship_date(self):
+        def header(**values):
+            pdf = packing_slip.packing_slip_pdf(dict(self.inv, po="", values=values))
+            text = [r[2] for r in packing_slip.PdfText(pdf).all_pages()[0]]
+            return text, re.findall(rb"/FT /Tx /T \(([^)]*)\)", pdf)
+        text, fields = header()  # blank: fillable fields
+        self.assertIn(b"P.O. Number", fields)
+        self.assertIn(b"Ship Date", fields)
+        text, fields = header(**{"P.O. Number": "PO-9", "Ship Date": "October 26, 2026"})  # given: printed text
+        self.assertIn("PO-9", text)
+        self.assertIn("October 26, 2026", text)
+        self.assertNotIn(b"P.O. Number", fields)
+        self.assertNotIn(b"Ship Date", fields)
 
     def test_prefilled_fields(self):
         inv = dict(self.inv, values={"Qty Packed 2": "1,100", "Packed By": "Sam", "Ship Date": ""})
@@ -164,20 +174,27 @@ class LogoTest(unittest.TestCase):
         self.addCleanup(pathlib.Path(f.name).unlink)
         return f.name
 
-    def test_rgba_split_into_color_and_alpha(self):
+    def test_rgba_flattened_onto_white(self):
         pixels = [[((x * 40 + y) % 256, (y * 30) % 256, (x * y * 7) % 256, (x * 50 + y * 9) % 256)
                    for x in range(6)] for y in range(7)]
         png = packing_slip.Png(self.write(png_bytes(6, 7, pixels, 6)))
-        self.assertEqual((png.w, png.h, png.colors, png.predicted), (6, 7, 3, False))
-        self.assertEqual(zlib.decompress(png.color), bytes(v for row in pixels for px in row for v in px[:3]))
-        self.assertEqual(zlib.decompress(png.alpha), bytes(px[3] for row in pixels for px in row))
+        self.assertEqual((png.w, png.h, png.colors, png.predicted, png.alpha), (6, 7, 3, False, None))
+        over_white = lambda c, a: 255 - ((255 - c) * a + 127) // 255
+        self.assertEqual(zlib.decompress(png.color),
+                         bytes(over_white(v, px[3]) for row in pixels for px in row for v in px[:3]))
+
+    def test_black_on_transparent_becomes_gray(self):  # the logo: no mask, transparent prints white
+        pixels = [[(0, 0, 0, a) for a in (0, 128, 255)]]
+        png = packing_slip.Png(self.write(png_bytes(3, 1, pixels, 6)))
+        self.assertEqual((png.colors, png.alpha), (1, None))
+        self.assertEqual(zlib.decompress(png.color), bytes([255, 127, 0]))
 
     def test_slip_with_logo(self):
         path = self.write(png_bytes(4, 4, [[(0, 0, 0, 255 * (x == y)) for x in range(4)] for y in range(4)], 6))
         inv = packing_slip.parse_invoice(invoice_pdf([PAGE1, PAGE2]), IGNORE)
         pdf = packing_slip.packing_slip_pdf(inv, logo=path)
-        self.assertEqual(len(re.findall(rb"/Subtype /Image", pdf)), 2)  # color + soft mask, shared by pages
-        self.assertIn(b"/SMask", pdf)
+        self.assertEqual(len(re.findall(rb"/Subtype /Image", pdf)), 1)  # one image shared by every page
+        self.assertNotIn(b"/SMask", pdf)  # no transparency for printers to get wrong
         self.assertNotIn(b"/Subtype /Image", packing_slip.packing_slip_pdf(inv, logo=None))
         self.assertNotIn(b"/Subtype /Image", packing_slip.packing_slip_pdf(inv, logo=path + ".missing"))
 
@@ -233,6 +250,27 @@ class SlipUiTest(unittest.TestCase):
             slip_ui.slip_from_page({"items": [{"item": "A", "qty": "four"}]})
         with self.assertRaisesRegex(ValueError, "no items"):
             slip_ui.slip_from_page({"items": []})
+
+
+class WaveLinkTest(unittest.TestCase):  # no network: only address handling
+    PAGE = ("https://next.waveapps.com/a/invoices/4cc6c564-0cf8-4209-99e4-020fd2a12448/public/"
+            "2639881692139036610/72f7a247a0fd422cabd3d6b70f7cc16a")
+
+    def test_ids_from_page(self):
+        self.assertEqual(wave_link.ids(self.PAGE), ("4cc6c564-0cf8-4209-99e4-020fd2a12448", "2639881692139036610",
+                                                   "72f7a247a0fd422cabd3d6b70f7cc16a"))
+        self.assertEqual(wave_link.page_url(self.PAGE[len("https://"):]), self.PAGE)  # scheme optional
+
+    def test_only_wave_addresses(self):
+        self.assertTrue(wave_link.is_wave_link("https://link.waveapps.com/pdcwcx-9ukyka"))
+        self.assertTrue(wave_link.is_wave_link(self.PAGE))
+        self.assertTrue(wave_link.is_wave_link("link.waveapps.com/pdcwcx-9ukyka"))
+        for bad in ("https://example.com/a/invoices/x", "https://link.waveapps.com.evil.example/x", "invoice.pdf"):
+            self.assertFalse(wave_link.is_wave_link(bad))
+        with self.assertRaisesRegex(ValueError, "not a Wave invoice link"):
+            wave_link.page_url("https://example.com/pdcwcx-9ukyka")
+        with self.assertRaisesRegex(ValueError, "not a Wave public invoice page"):
+            wave_link.ids("https://next.waveapps.com/a/invoices/")
 
 
 if __name__ == "__main__":
