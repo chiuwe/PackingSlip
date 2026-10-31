@@ -601,6 +601,7 @@ def parse_invoice(data, ignore=None):
 # Packing slip PDF
 # --------------------------------------------------------------------------
 ROW_H = 26
+SIGN_H = 110  # space at the foot of the last page for the sign-off lines
 COL_NUM, COL_ITEM, COL_ORD, COL_PACK = MARGIN + 4, MARGIN + 30, 400, 470  # qty columns are right edges / box left
 BOX_W = 70
 
@@ -677,11 +678,11 @@ def packing_slip_pdf(inv, logo=LOGO):
             pg.text(MARGIN, y + 20, "%s (continued)" % title, size=10, gray=0.35)
         table_head()
 
-    footer_h = 120
     new_page()
     for i, (item, qty) in enumerate(items, 1):
-        last = i == len(items)
-        if y - ROW_H - (ROW_H + footer_h if last else 0) < MARGIN + 20:
+        # the last item needs room for the totals row above the sign-off at the foot of the page
+        bottom = MARGIN + SIGN_H + ROW_H if i == len(items) else MARGIN + 20
+        if y - ROW_H < bottom:
             new_page()
         top = y
         mid = top - ROW_H / 2 - 3
@@ -702,11 +703,11 @@ def packing_slip_pdf(inv, logo=LOGO):
     pg.rect(COL_PACK, y, BOX_W, ROW_H - 8, width=1.25)
     pg.field("Qty Packed Total", COL_PACK + 1, y + 1, BOX_W - 2, ROW_H - 10, size=12, align=1,
              value=values.get("Qty Packed Total", ""))
-    for row in ((("Packed by", "Packed By", MARGIN, 200), ("Date", "Packed Date", MARGIN + 260, 120),
-                 ("No. of boxes", "No. of Boxes", MARGIN + 430, 110)),
-                (("Received by (print and sign)", "Received By", MARGIN, 380),
-                 ("Date", "Received Date", MARGIN + 430, 110))):
-        y -= 44 if row[0][0] == "Packed by" else 40
+    # sign-off fixed to the bottom of the last page, whatever the table's length
+    for y, row in ((MARGIN + 70, (("Packed by", "Packed By", MARGIN, 200), ("Date", "Packed Date", MARGIN + 260, 120),
+                                  ("No. of boxes", "No. of Boxes", MARGIN + 430, 110))),
+                   (MARGIN + 30, (("Received by (print and sign)", "Received By", MARGIN, 380),
+                                  ("Date", "Received Date", MARGIN + 430, 110)))):
         for label, name, x, w in row:
             pg.line(x, y, x + w, y, gray=0.4)
             pg.text(x, y - 11, label, size=8, gray=0.45)
