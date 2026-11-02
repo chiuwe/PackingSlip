@@ -1,7 +1,7 @@
 """Tests for packing_slip.py: items and quantities read from a Wave-style invoice PDF
 (hex strings, ToUnicode fonts, items continuing across pages), and the slip PDF lists them.
 
-    python3 test/test_packing_slip.py
+    python3 tests/test_packing_slip.py
 """
 import pathlib
 import re
@@ -11,7 +11,7 @@ import unittest
 import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT.parent))
+sys.path.insert(0, str(ROOT.parent / "src"))
 import packing_slip  # noqa: E402
 import slip_ui  # noqa: E402
 import wave_link  # noqa: E402
@@ -200,7 +200,7 @@ class LogoTest(unittest.TestCase):
 
     def test_shipped_logo_loads(self):
         png = packing_slip.load_logo(packing_slip.LOGO)
-        self.assertIsNotNone(png, "logo.png is missing next to packing_slip.py")
+        self.assertIsNotNone(png, "assets/logo.png is missing")
         self.assertEqual(len(zlib.decompress(png.color)), png.w * png.h * png.colors)
 
 

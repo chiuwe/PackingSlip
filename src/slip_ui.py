@@ -7,8 +7,8 @@ invoice PDF on the page to fill the packing slip table, edit anything (ship-to,
 items, quantities, qty packed, sign-off), then export the PDF. Settings edits the
 line items to ignore (config.json). Standard library only.
 
-  python3 slip_ui.py
-  python3 slip_ui.py --port 8766 --no-browser
+  python3 src/slip_ui.py
+  python3 src/slip_ui.py --port 8766 --no-browser
 
 Invoices are read locally and never leave this machine.
 """
@@ -24,8 +24,8 @@ from urllib.parse import quote, urlparse
 import packing_slip
 import wave_link
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-PAGE = os.path.join(HERE, "slip_ui.html")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the folder above src/
+PAGE = os.path.join(ROOT, "assets", "slip_ui.html")
 MAX_UPLOAD = 50 * 1024 * 1024
 
 

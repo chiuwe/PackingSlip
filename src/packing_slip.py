@@ -1,9 +1,9 @@
 """
 packing_slip.py - make a packing slip PDF from an invoice PDF (the Wave invoice layout).
 
-    python3 packing_slip.py Invoice_220_2026-10-14.pdf
-    python3 packing_slip.py invoices/*.pdf -o "Packing slips"
-    python3 packing_slip.py https://link.waveapps.com/...   # a Wave invoice link (see wave_link.py)
+    python3 src/packing_slip.py Invoice_220_2026-10-14.pdf
+    python3 src/packing_slip.py invoices/*.pdf -o "Packing slips"
+    python3 src/packing_slip.py https://link.waveapps.com/...   # a Wave invoice link (see wave_link.py)
 
 The slip lists each invoice line's item and quantity ordered, with an empty
 "Qty Packed" box to fill in by hand. Descriptions (material, Bent, Pemnut ...) and
@@ -26,9 +26,9 @@ import sys
 import zlib
 
 PAGE_W, PAGE_H, MARGIN = 612, 792, 36  # letter portrait
-HERE = os.path.dirname(os.path.abspath(__file__))
-LOGO = os.path.join(HERE, "logo.png")  # top-left of each page, if present
-CONFIG = os.path.join(HERE, "config.json")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the folder above src/
+LOGO = os.path.join(ROOT, "assets", "logo.png")  # top-left of each page, if present
+CONFIG = os.path.join(ROOT, "config.json")
 LOGO_SIZE = 72
 
 
@@ -739,7 +739,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Make a packing slip PDF from an invoice PDF.")
     ap.add_argument("invoices", nargs="+", help="invoice PDF file(s) or Wave invoice links")
     ap.add_argument("-o", "--out", help="output file (one invoice) or folder; default: next to each invoice")
-    ap.add_argument("--config", default=CONFIG, help="config file with ignore_items (default: config.json here)")
+    ap.add_argument("--config", default=CONFIG, help="config file with ignore_items (default: config.json in the project folder)")
     ap.add_argument("--ship-date", default=long_date(datetime.date.today()),
                     help='printed ship date (default: today); "" leaves it blank to fill in')
     args = ap.parse_args(argv)
